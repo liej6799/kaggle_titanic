@@ -14,8 +14,6 @@ pd.set_option('display.max_rows', 1000)
 pd.set_option('display.max_columns', 500)
 pd.set_option('display.width', 1000)
 
-# load train data
-
 def train_logistic_regression(features, result, target):
     classifier = LogisticRegression()
     _classifier = classifier.fit(features, target)
@@ -30,10 +28,11 @@ def train_gradient_boost(features, result, target):
     return _classifier.predict(result)
 
 
-def map_gender_to_int(_gender):
+def map_gender_to_int(_input):
     # fix gender
-    _gender = _gender.map({'male': 1, 'female': 2})
-    return _gender.astype(np.float)
+    _input['Sex'] = _input['Sex'].map({'male': 1, 'female': 2})
+    _input['Sex'] = _input['Sex'].astype(np.int)
+    return _input
 
 
 def fix_age_with_mean(_input):
@@ -62,9 +61,39 @@ def sum_sib_and_parch(_input):
     _input['sumSibSpParch'] = _input['SibSp'] + _input['Parch']
     return _input
 
+
 def fix_fare(_input):
     _input.fillna({'Fare': 0})
     return _input.fillna({'Fare': _input['Fare'].mean()})
+
+
+def fix_embarked(_input):
+    _input['Embarked'] = _input['Embarked'].map({'S': 1, 'Q': 2, 'C': 3})
+    return _input
+
+
+def fix_embarked_with_fare(_input_train):
+    _input_train = fix_embarked(_input_train)
+
+    _embarked_train = _input_train.copy()
+    _embarked_test = _input_train.copy()
+    _embarked_train = _embarked_train.dropna(subset=['Embarked'])
+    _embarked_test = _embarked_test[_embarked_test.isnull().any(1)]
+    _embarked_valid_data = _embarked_train['Embarked']
+
+    # remove ticket and before train
+    _embarked_train.drop('Embarked', axis=1, inplace=True)
+    _embarked_test.drop('Embarked', axis=1, inplace=True)
+
+    # train the result and store the null value.
+    train_result = train_gradient_boost(_embarked_train, _embarked_test, _embarked_valid_data)
+    _embarked_test['Embarked'] = train_result
+    _embarked_train['Embarked'] = _embarked_valid_data
+    _result = _embarked_train.append(_embarked_test)
+
+    # print(_embarked_test.shape)
+    return _result
+
 
 def extract_title_from_name(_input):
     title_dictionary = {
@@ -110,52 +139,59 @@ if os.path.exists(train_file):
         train = train_csv.drop(['Cabin'], axis=1)
         test = test_csv.drop(['Cabin'], axis=1)
 
+        train = train.drop(['Ticket'], axis=1)
+        test = test.drop(['Ticket'], axis=1)
+
         # fix data
-        # drop NULL value to avoid learning prob
-        # train_no_null = pd.DataFrame(train).dropna()
         train_no_null = extract_title_from_name(train)
         train_no_null = fix_age_with_class(train_no_null)
         train_no_null = sum_sib_and_parch(train_no_null)
-        train_no_null['Sex'] = map_gender_to_int(train_no_null['Sex'])
-        train_no_null.drop('Ticket', axis=1, inplace=True)
-        train_no_null.drop('Embarked', axis=1, inplace=True)
+        train_no_null = map_gender_to_int(train_no_null)
+        train_no_null = fix_embarked_with_fare(train_no_null)
 
-        survived = train_no_null['Survived']
-        train_no_null.drop('Survived', axis=1, inplace=True)
-        train_no_null.drop('PassengerId', axis=1, inplace=True)
-        train_no_null.drop('Title_Royalty', axis=1, inplace=True)
+        # remove ticket
 
-        # test
         test_no_null = extract_title_from_name(test)
         test_no_null = fix_age_with_class(test_no_null)
         test_no_null = sum_sib_and_parch(test_no_null)
+        test_no_null = map_gender_to_int(test_no_null)
         test_no_null = fix_fare(test_no_null)
-        test_no_null['Sex'] = map_gender_to_int(test['Sex'])
-        test_no_null.drop('Ticket', axis=1, inplace=True)
+        test_no_null = fix_embarked(test_no_null)
 
+        survived = train_no_null['Survived']
         test_passenger = test_no_null['PassengerId']
 
-        test_no_null.drop('PassengerId', axis=1, inplace=True)
-        test_no_null.drop('Embarked', axis=1, inplace=True)
+        train_no_null = train_no_null.drop(['Survived'], axis=1)
+        train_no_null = train_no_null.drop(['Title_Royalty'], axis=1)
 
+        test_no_null = test_no_null.drop(['PassengerId'], axis=1)
+        train_no_null = train_no_null.drop(['PassengerId'], axis=1)
+
+        print(train_no_null.shape)
+        print(test_no_null.shape)
+        print(survived.shape)
 
         clf = RandomForestClassifier(n_estimators=50, max_features='sqrt')
         clf = clf.fit(train_no_null, survived)
 
-        featu = pd.DataFrame()
-        featu['feature'] = train_no_null.columns
-        featu['importance'] = clf.feature_importances_
-        featu.sort_values(by=['importance'], ascending=True, inplace=True)
-        featu.set_index('feature', inplace=True)
+        feature_classification = pd.DataFrame()
+        feature_classification['feature'] = train_no_null.columns
+        feature_classification['importance'] = clf.feature_importances_
+        feature_classification.sort_values(by=['importance'], ascending=True, inplace=True)
+        feature_classification.set_index('feature', inplace=True)
 
-        featu.plot(kind='barh', figsize=(25, 25))
+        feature_classification.plot(kind='barh', figsize=(25, 25))
+        plt.show()
 
         model = SelectFromModel(clf, prefit=True)
         train_reduced = model.transform(train_no_null)
         test_reduced = model.transform(test_no_null)
 
-        train_result = train_gradient_boost(train_reduced, test_reduced, survived)
+        print(train_reduced.shape)
+        print(test_reduced.shape)
+        print(survived.shape)
 
+        train_result = train_gradient_boost(train_reduced, test_reduced, survived)
 
         train_result_combine = np.column_stack((test_passenger, train_result))
         train_result_combine_column = pd.DataFrame(train_result_combine, columns=['PassengerId', 'Survived'])
