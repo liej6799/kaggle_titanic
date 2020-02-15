@@ -14,12 +14,18 @@ pd.set_option('display.max_rows', 1000)
 pd.set_option('display.max_columns', 500)
 pd.set_option('display.width', 1000)
 
+
 def train_logistic_regression(features, result, target):
     classifier = LogisticRegression()
     _classifier = classifier.fit(features, target)
     print(_classifier.score(features, target))
     return _classifier.predict(result)
 
+def train_random_forest(features, result, target):
+    classifier = RandomForestClassifier()
+    _classifier = classifier.fit(features, target)
+    print(_classifier.score(features, target))
+    return _classifier.predict(result)
 
 def train_gradient_boost(features, result, target):
     classifier = GradientBoostingClassifier()
@@ -64,39 +70,22 @@ def sum_sib_and_parch(_input):
 
 def fix_fare(_input):
     _input.fillna({'Fare': 0})
-    return _input.fillna({'Fare': _input['Fare'].mean()})
+    return _input.fillna({'Fare': _input['Fare'].median()})
 
 
-def fix_embarked(_input):
-    _input['Embarked'] = _input['Embarked'].map({'S': 1, 'Q': 2, 'C': 3})
+
+
+def fix_embarked_with_fare(_input):
+
+    _input['Embarked'] = _input['Embarked'].fillna('S')
+    embarked_dummies = pd.get_dummies(_input['Embarked'], prefix='Embarked')
+    _input = pd.concat([_input, embarked_dummies], axis=1)
+    _input.drop('Embarked', inplace=True, axis=1)
     return _input
 
 
-def fix_embarked_with_fare(_input_train):
-    _input_train = fix_embarked(_input_train)
-
-    _embarked_train = _input_train.copy()
-    _embarked_test = _input_train.copy()
-    _embarked_train = _embarked_train.dropna(subset=['Embarked'])
-    _embarked_test = _embarked_test[_embarked_test.isnull().any(1)]
-    _embarked_valid_data = _embarked_train['Embarked']
-
-    # remove ticket and before train
-    _embarked_train.drop('Embarked', axis=1, inplace=True)
-    _embarked_test.drop('Embarked', axis=1, inplace=True)
-
-    # train the result and store the null value.
-    train_result = train_gradient_boost(_embarked_train, _embarked_test, _embarked_valid_data)
-    _embarked_test['Embarked'] = train_result
-    _embarked_train['Embarked'] = _embarked_valid_data
-    _result = _embarked_train.append(_embarked_test)
-
-    # print(_embarked_test.shape)
-    return _result
-
-
 def extract_title_from_name(_input):
-    title_dictionary = {
+    title_mapping = {
         "Capt": "Officer",
         "Col": "Officer",
         "Major": "Officer",
@@ -106,6 +95,7 @@ def extract_title_from_name(_input):
         "Dr": "Officer",
         "Rev": "Officer",
         "the Countess": "Royalty",
+        "Dona": "Royalty",
         "Mme": "Mrs",
         "Mlle": "Miss",
         "Ms": "Mrs",
@@ -115,13 +105,64 @@ def extract_title_from_name(_input):
         "Master": "Master",
         "Lady": "Royalty"
     }
-    _input['Title'] = _input['Name'].map(lambda name: name.split(',')[1].split('.')[0].strip())
-    _input['Title'] = _input.Title.map(title_dictionary)
+    _input['Title'] = _input['Name'].str.extract(',\s(.+?)\.', expand=True)[0]
+    _input['Title'] = _input['Title'].map(title_mapping)
 
     titles_dummies = pd.get_dummies(_input['Title'], prefix='Title')
     _input = pd.concat([_input, titles_dummies], axis=1)
     _input.drop('Name', axis=1, inplace=True)
     _input.drop('Title', axis=1, inplace=True)
+    return _input
+
+
+def clean_ticket(ticket):
+
+    ticket = ticket.replace('.', '')
+    ticket = ticket.replace('/', '')
+    ticket = ticket.split()
+    ticket = map(lambda t: t.strip(), ticket)
+    ticket = list(filter(lambda t: not t.isdigit(), ticket))
+    if len(ticket) > 0:
+        return ticket[0]
+    else:
+        return 'X'
+
+
+def extract_ticket(_input):
+    _input['Ticket'] = _input['Ticket'].map(clean_ticket)
+    ticket_dummies = pd.get_dummies(_input['Ticket'], prefix='Ticket')
+    _input = pd.concat([_input, ticket_dummies], axis=1)
+    _input.drop('Ticket', inplace=True, axis=1)
+    return _input
+
+def process_family(_input):
+    _input['FamilySize'] = _input['Parch'] + _input['SibSp'] + 1
+
+    _input['Singleton'] = 0
+    _input.loc[_input['FamilySize'] == 1, 'Singleton'] = 1
+
+    _input['SmallFamily'] = 0
+    _input.loc[_input['FamilySize'].between(2, 4), 'SmallFamily'] = 1
+
+    _input['LargeFamily'] = 0
+    _input.loc[_input['FamilySize'] > 4, 'LargeFamily'] = 1
+
+    _input.drop('Parch', inplace=True, axis=1)
+    _input.drop('SibSp', inplace=True, axis=1)
+    return _input
+
+def process_cabin(_input):
+    _input['Cabin'] = _input['Cabin'].fillna('U')
+    _input['Cabin'] = _input['Cabin'].map(lambda c: c[0])
+    cabin_dummies = pd.get_dummies(_input['Cabin'], prefix='Cabin')
+    _input = pd.concat([_input, cabin_dummies], axis=1)
+    _input.drop('Cabin', inplace=True, axis=1)
+    return _input
+
+def process_pclass(_input):
+    pclass_dummies = pd.get_dummies(_input['Pclass'], prefix='Pclass')
+    _input = pd.concat([_input, pclass_dummies], axis=1)
+    _input.drop('Pclass', inplace=True, axis=1)
     return _input
 
 
@@ -135,6 +176,69 @@ if os.path.exists(train_file):
         train_csv = pd.read_csv(train_file)
         test_csv = pd.read_csv(test_file)
 
+        train_survived = train_csv['Survived']
+        test_passenger = test_csv['PassengerId']
+
+        train_csv = train_csv.drop(['Survived'], axis=1)
+
+        # Combine trains and test data
+        input_combined = train_csv.append(test_csv)
+
+        # remove PassengerId
+        input_combined = input_combined.drop(['PassengerId'], axis=1)
+
+        # extract Title from Name
+        input_combined = extract_title_from_name(input_combined)
+
+        input_combined = process_pclass(input_combined)
+
+        input_combined = extract_ticket(input_combined)
+
+        input_combined = fix_age_with_mean(input_combined)
+
+        input_combined = process_family(input_combined)
+
+        input_combined = fix_fare(input_combined)
+
+        input_combined = process_cabin(input_combined)
+
+        input_combined = fix_embarked_with_fare(input_combined)
+
+        input_combined = map_gender_to_int(input_combined)
+
+        _input_final_train = input_combined[:891]
+        _input_final_test = input_combined[891:]
+
+
+        clf = RandomForestClassifier(n_estimators=50, max_features='sqrt')
+        clf = clf.fit(_input_final_train, train_survived)
+
+        feature_classification = pd.DataFrame()
+        feature_classification['feature'] = _input_final_train.columns
+        feature_classification['importance'] = clf.feature_importances_
+        feature_classification.sort_values(by=['importance'], ascending=True, inplace=True)
+        feature_classification.set_index('feature', inplace=True)
+
+        feature_classification.plot(kind='barh', figsize=(25, 25))
+        plt.show()
+
+        model = SelectFromModel(clf, prefit=True)
+        train_reduced = model.transform(_input_final_train)
+        test_reduced = model.transform(_input_final_test)
+
+        print(train_reduced.shape)
+        print(test_reduced.shape)
+        print(test_passenger.shape)
+
+        train_result = train_random_forest(train_reduced, test_reduced, train_survived)
+
+        train_result_combine = np.column_stack((test_passenger, train_result))
+        train_result_combine_column = pd.DataFrame(train_result_combine, columns=['PassengerId', 'Survived'])
+        train_result_combine_column['Survived'] = train_result_combine_column['Survived'].astype(int)
+        #print(train_result_combine_column)
+        export_csv(train_result_combine_column)
+
+'''
         # remove cabin as it too much empty
         train = train_csv.drop(['Cabin'], axis=1)
         test = test_csv.drop(['Cabin'], axis=1)
@@ -198,3 +302,4 @@ if os.path.exists(train_file):
         train_result_combine_column['Survived'] = train_result_combine_column['Survived'].astype(int)
         print(train_result_combine_column)
         export_csv(train_result_combine_column)
+'''
